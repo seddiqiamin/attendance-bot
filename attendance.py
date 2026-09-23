@@ -1,6 +1,5 @@
 import asyncio
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timedelta, timezone
 
 from telegram import (
     Update,
@@ -60,12 +59,19 @@ def get_chat_topic(update):
     return group_id, topic_id
 
 
+AFGHANISTAN_OFFSET = timedelta(hours=4, minutes=30)
+
+
+def get_current_datetime():
+    return datetime.now(timezone.utc) + AFGHANISTAN_OFFSET
+
+
 def get_current_date():
-    return datetime.now(ZoneInfo("Asia/Herat")).strftime("%Y-%m-%d")
+    return get_current_datetime().strftime("%Y-%m-%d")
 
 
 def get_current_time():
-    return datetime.now(ZoneInfo("Asia/Herat")).strftime("%H:%M")
+    return get_current_datetime().strftime("%H:%M")
 
 
 # ============================================================
@@ -719,7 +725,7 @@ async def admin_callback(
 
     if query.data == "monthly_report":
 
-        now = datetime.now(ZoneInfo("Asia/Herat"))
+        now = get_current_datetime()
 
         year = now.year
         month = now.month
@@ -800,7 +806,7 @@ async def admin_callback(
 
     if query.data == "total_fines":
 
-        now = datetime.now(ZoneInfo("Asia/Herat"))
+        now = get_current_datetime()
 
         users = get_all_users()
 
@@ -1420,7 +1426,7 @@ async def monthly_report(
 
     ensure_group_exists(message)
 
-    now = datetime.now(ZoneInfo("Asia/Herat"))
+    now = get_current_datetime()
 
     users = get_all_users()
 
