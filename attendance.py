@@ -1,5 +1,6 @@
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import (
     Update,
@@ -59,16 +60,13 @@ def get_chat_topic(update):
     return group_id, topic_id
 
 
-AFGHANISTAN_OFFSET = timedelta(hours=4, minutes=30)
-
+AFGHANISTAN_TZ = ZoneInfo("Asia/Kabul")
 
 def get_current_datetime():
-    return datetime.now(timezone.utc) + AFGHANISTAN_OFFSET
-
+    return datetime.now(AFGHANISTAN_TZ)
 
 def get_current_date():
     return get_current_datetime().strftime("%Y-%m-%d")
-
 
 def get_current_time():
     return get_current_datetime().strftime("%H:%M")
