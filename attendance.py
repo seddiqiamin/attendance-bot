@@ -1,5 +1,6 @@
 import asyncio
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from telegram import (
     Update,
@@ -21,14 +22,13 @@ from config import BOT_TOKEN, ADMIN_ID
 from database import (
     create_tables,
     add_user,
-    add_group,
     get_group,
-    get_all_groups,
-    get_all_users,
-    update_group_settings,
+    add_group,
     get_today_attendance,
     create_today_attendance,
     update_exit,
+    update_group_settings,
+    get_all_users,
     get_daily_report,
     get_monthly_user_report
 )
@@ -38,98 +38,34 @@ from database import (
 # ابزارهای کمکی
 # ============================================================
 
-def get_topic_id(message):
+def get_chat_topic(update):
     """
-    دریافت Topic ID.
-    اگر پیام در Topic باشد message_thread_id برمی‌گردد.
+    دریافت Group ID و Topic ID از پیام فعلی
     """
 
-    return message.message_thread_id
-
-
-def is_group_message(message):
-    """
-    بررسی می‌کند پیام از گروه یا سوپرگروه آمده باشد.
-    """
+    message = update.effective_message
 
     if not message:
-        return False
+        return None, None
 
-    return message.chat.type in ["group", "supergroup"]
+    group_id = message.chat_id
 
+    # اگر پیام داخل Topic باشد
+    topic_id = message.message_thread_id
 
-def get_current_group(message):
-    """
-    دریافت گروه + Topic فعلی از دیتابیس.
-    """
-
-    if not message:
-        return None
-
-    if not is_group_message(message):
-        return None
-
-    topic_id = get_topic_id(message)
-
+    # برای جلوگیری از NULL در دیتابیس
     if topic_id is None:
-        return None
+        topic_id = 0
 
-    return get_group(
-        message.chat.id,
-        topic_id
-    )
+    return group_id, topic_id
 
 
-def normalize_text(text):
-    """
-    یکسان‌سازی متن.
-    """
-
-    if not text:
-        return ""
-
-    text = text.strip()
-
-    text = " ".join(
-        text.split()
-    )
-
-    return text
+def get_current_date():
+    return datetime.now().strftime("%Y-%m-%d")
 
 
-def is_hello(text):
-    """
-    تشخیص پیام ورود.
-    """
-
-    text = normalize_text(text)
-
-    return text in [
-        "سلام",
-        "سلام!",
-        "سلام !",
-        "سلام 👋",
-        "سلام👋"
-    ]
-
-
-def is_goodbye(text):
-    """
-    تشخیص پیام خروج.
-    """
-
-    text = normalize_text(text)
-
-    return text in [
-        "خدا حافظ",
-        "خداحافظ",
-        "خدا حافظ!",
-        "خداحافظ!",
-        "خدا حافظ 👋",
-        "خداحافظ 👋",
-        "خدا حافظ👋",
-        "خداحافظ👋"
-    ]
+def get_current_time():
+    return datetime.now().strftime("%H:%M")
 
 
 # ============================================================
@@ -139,6 +75,9 @@ def is_goodbye(text):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     user = update.effective_user
+
+    if not user:
+        return
 
     add_user(
         user_id=user.id,
@@ -154,120 +93,311 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
-# /groupinfo
+# اطلاعات گروه
 # ============================================================
 
-async def group_info(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = update.effective_message
 
-    if not is_group_message(message):
-
-        await message.reply_text(
-            "⚠️ این دستور باید داخل گروه استفاده شود."
-        )
-
+    if not message:
         return
 
     await message.reply_text(
         f"🏢 اطلاعات گروه\n\n"
         f"نام گروه: {message.chat.title}\n"
-        f"Group ID: {message.chat.id}\n"
+        f"Group ID: {message.chat_id}\n"
         f"نوع: {message.chat.type}"
     )
 
 
 # ============================================================
-# /topicinfo
+# اطلاعات Topic
 # ============================================================
 
-async def topic_info(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
+async def topic_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     message = update.effective_message
 
-    if not is_group_message(message):
-
-        await message.reply_text(
-            "⚠️ این دستور باید داخل گروه استفاده شود."
-        )
-
+    if not message:
         return
 
     topic_id = message.message_thread_id
 
     if topic_id is None:
-
-        await message.reply_text(
-            "⚠️ این پیام داخل یک Topic نیست."
-        )
-
-        return
+        topic_id = 0
 
     await message.reply_text(
         f"📌 اطلاعات Topic\n\n"
-        f"🏢 Group ID: {message.chat.id}\n"
-        f"📌 Topic ID: {topic_id}"
+        f"Group ID: {message.chat_id}\n"
+        f"Topic ID: {topic_id}"
     )
 
 
 # ============================================================
-# /register
+# ثبت خودکار گروه و Topic
 # ============================================================
 
-async def register_group(
+def ensure_group_exists(message):
+
+    group_id = message.chat_id
+
+    topic_id = message.message_thread_id
+
+    if topic_id is None:
+        topic_id = 0
+
+    group = get_group(
+        group_id,
+        topic_id
+    )
+
+    if not group:
+
+        add_group(
+            group_id=group_id,
+            group_name=message.chat.title or "بدون نام",
+            topic_id=topic_id
+        )
+
+        group = get_group(
+            group_id,
+            topic_id
+        )
+
+    return group
+
+
+# ============================================================
+# حضور و غیاب
+# ============================================================
+
+async def attendance_handler(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
     message = update.effective_message
 
-    if not is_group_message(message):
-
-        await message.reply_text(
-            "⚠️ این دستور باید داخل گروه استفاده شود."
-        )
-
+    if not message:
         return
+
+    # فقط گروه
+    if message.chat.type not in [
+        "group",
+        "supergroup"
+    ]:
+        return
+
+    # متن پیام
+    text = message.text or message.caption
+
+    if not text:
+        return
+
+    text = " ".join(
+        text.strip().split()
+    )
+
+    # کاربر
+    user = message.from_user
+
+    if not user:
+        return
+
+    # ثبت کاربر
+    add_user(
+        user_id=user.id,
+        name=user.full_name
+    )
+
+    # --------------------------------------------------------
+    # دریافت Group ID و Topic ID
+    # --------------------------------------------------------
+
+    group_id = message.chat_id
 
     topic_id = message.message_thread_id
 
     if topic_id is None:
+        topic_id = 0
 
+    # --------------------------------------------------------
+    # ثبت خودکار گروه
+    # --------------------------------------------------------
+
+    group = ensure_group_exists(message)
+
+    if not group:
         await message.reply_text(
-            "⚠️ لطفاً دستور /register را داخل Topic حاضری ارسال کنید."
+            "❌ خطا در ثبت گروه."
         )
+        return
+
+    (
+        db_group_id,
+        group_name,
+        db_topic_id,
+        entry_time,
+        exit_time,
+        late_entry_fine,
+        early_exit_fine,
+        status
+    ) = group
+
+    # اگر گروه غیرفعال باشد
+    if status != "active":
+        return
+
+    # --------------------------------------------------------
+    # تاریخ و ساعت
+    # --------------------------------------------------------
+
+    today = get_current_date()
+    current_time = get_current_time()
+
+    # ========================================================
+    # ورود
+    # ========================================================
+
+    if text in [
+        "سلام",
+        "سلام!",
+        "سلام !"
+    ]:
+
+        attendance = get_today_attendance(
+            user_id=user.id,
+            group_id=group_id,
+            topic_id=topic_id,
+            date=today
+        )
+
+        # قبلاً ورود ثبت شده
+        if attendance:
+
+            await message.reply_text(
+                f"⚠️ ورود شما قبلاً ثبت شده است.\n\n"
+                f"👤 {user.full_name}\n"
+                f"🕐 زمان ورود: {attendance[5]}"
+            )
+
+            return
+
+        # محاسبه جریمه
+        entry_fine = 0
+
+        if current_time > entry_time:
+            entry_fine = late_entry_fine
+
+        # ذخیره
+        create_today_attendance(
+            user_id=user.id,
+            group_id=group_id,
+            topic_id=topic_id,
+            date=today,
+            entry_time=current_time,
+            entry_fine=entry_fine
+        )
+
+        # پیام
+        if entry_fine > 0:
+
+            await message.reply_text(
+                f"⚠️ ورود ثبت شد\n\n"
+                f"👤 {user.full_name}\n"
+                f"🕐 زمان ورود: {current_time}\n"
+                f"⏰ ساعت تعیین‌شده: {entry_time}\n\n"
+                f"💰 جریمه تأخیر: "
+                f"{entry_fine} افغانی"
+            )
+
+        else:
+
+            await message.reply_text(
+                f"🟢 ورود ثبت شد\n\n"
+                f"👤 {user.full_name}\n"
+                f"🕐 زمان ورود: {current_time}\n"
+                f"⏰ ساعت تعیین‌شده: {entry_time}\n\n"
+                f"💰 جریمه: 0 افغانی"
+            )
 
         return
 
-    add_group(
-        group_id=message.chat.id,
-        group_name=message.chat.title,
-        topic_id=topic_id
-    )
+    # ========================================================
+    # خروج
+    # ========================================================
 
-    group = get_group(
-        message.chat.id,
-        topic_id
-    )
+    if text in [
+        "خدا حافظ",
+        "خداحافظ",
+        "خدا حافظ!",
+        "خداحافظ!"
+    ]:
 
-    await message.reply_text(
-        "✅ گروه با موفقیت ثبت شد.\n\n"
-        f"🏢 گروه: {message.chat.title}\n"
-        f"🆔 Group ID: {message.chat.id}\n"
-        f"📌 Topic ID: {topic_id}\n\n"
-        "⚙️ تنظیمات پیش‌فرض:\n"
-        f"🕐 ورود: {group[3]}\n"
-        f"🕐 خروج: {group[4]}\n"
-        f"💰 جریمه ورود دیر: {group[5]} افغانی\n"
-        f"💰 جریمه خروج زود: {group[6]} افغانی\n\n"
-        "اکنون این Topic آماده استفاده است. ✅"
-    )
+        attendance = get_today_attendance(
+            user_id=user.id,
+            group_id=group_id,
+            topic_id=topic_id,
+            date=today
+        )
+
+        # ورود ثبت نشده
+        if not attendance:
+
+            await message.reply_text(
+                "⚠️ برای امروز ورود شما ثبت نشده است.\n\n"
+                "ابتدا باید ورود خود را ثبت کنید."
+            )
+
+            return
+
+        # خروج قبلاً ثبت شده
+        if attendance[6]:
+
+            await message.reply_text(
+                f"⚠️ خروج شما قبلاً ثبت شده است.\n\n"
+                f"🕐 زمان خروج: {attendance[6]}"
+            )
+
+            return
+
+        # محاسبه جریمه خروج
+        exit_fine = 0
+
+        if current_time < exit_time:
+            exit_fine = early_exit_fine
+
+        # ذخیره خروج
+        update_exit(
+            attendance_id=attendance[0],
+            exit_time=current_time,
+            exit_fine=exit_fine
+        )
+
+        # پیام
+        if exit_fine > 0:
+
+            await message.reply_text(
+                f"⚠️ خروج ثبت شد\n\n"
+                f"👤 {user.full_name}\n"
+                f"🕐 زمان خروج: {current_time}\n"
+                f"⏰ ساعت تعیین‌شده: {exit_time}\n\n"
+                f"💰 جریمه خروج زودهنگام: "
+                f"{exit_fine} افغانی"
+            )
+
+        else:
+
+            await message.reply_text(
+                f"🔵 خروج ثبت شد\n\n"
+                f"👤 {user.full_name}\n"
+                f"🕐 زمان خروج: {current_time}\n"
+                f"⏰ ساعت تعیین‌شده: {exit_time}\n\n"
+                f"💰 جریمه: 0 افغانی"
+            )
+
+        return
 
 
 # ============================================================
@@ -282,6 +412,9 @@ async def admin_panel(
     user = update.effective_user
     message = update.effective_message
 
+    if not user or not message:
+        return
+
     if user.id != ADMIN_ID:
 
         await message.reply_text(
@@ -290,89 +423,66 @@ async def admin_panel(
 
         return
 
-    if not is_group_message(message):
+    # پنل باید داخل گروه/Topic باز شود
+    if message.chat.type not in [
+        "group",
+        "supergroup"
+    ]:
 
         await message.reply_text(
-            "⚠️ پنل مدیریت را داخل Topic حاضری گروه باز کنید."
+            "⚠️ برای مدیریت تنظیمات، "
+            "دستور /admin را داخل Topic حضور و غیاب گروه اجرا کنید."
         )
 
         return
 
-    topic_id = message.message_thread_id
-
-    if topic_id is None:
-
-        await message.reply_text(
-            "⚠️ لطفاً /admin را داخل Topic حاضری اجرا کنید."
-        )
-
-        return
-
-    group = get_group(
-        message.chat.id,
-        topic_id
-    )
-
-    if not group:
-
-        await message.reply_text(
-            "⚠️ این Topic هنوز ثبت نشده است.\n\n"
-            "ابتدا دستور زیر را اجرا کنید:\n"
-            "/register"
-        )
-
-        return
+    # اطمینان از ثبت گروه
+    ensure_group_exists(message)
 
     keyboard = [
-
         [
             InlineKeyboardButton(
                 "⚙️ تنظیمات حاضری",
                 callback_data="attendance_settings"
             )
         ],
-
         [
             InlineKeyboardButton(
-                "👥 کاربران",
+                "👥 مدیریت کاربران",
                 callback_data="manage_users"
             )
         ],
-
         [
             InlineKeyboardButton(
                 "📊 گزارش امروز",
                 callback_data="daily_report"
             )
         ],
-
         [
             InlineKeyboardButton(
                 "📅 گزارش ماهانه",
                 callback_data="monthly_report"
             )
         ],
-
         [
             InlineKeyboardButton(
                 "💰 مجموع جریمه‌ها",
                 callback_data="total_fines"
             )
         ]
-
     ]
 
     await message.reply_text(
         "👨‍💼 پنل مدیریت\n\n"
-        f"🏢 گروه: {group[1]}\n"
-        f"📌 Topic: {group[2]}\n\n"
+        f"🏢 گروه: {message.chat.title}\n"
+        f"📌 Topic ID: {message.message_thread_id or 0}\n\n"
         "یکی از گزینه‌های زیر را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
 # ============================================================
-# Callback پنل مدیریت
+# Callback های مدیریت
 # ============================================================
 
 async def admin_callback(
@@ -382,7 +492,8 @@ async def admin_callback(
 
     query = update.callback_query
 
-    await query.answer()
+    if not query:
+        return
 
     user = query.from_user
 
@@ -395,36 +506,23 @@ async def admin_callback(
 
         return
 
+    await query.answer()
+
     message = query.message
 
     if not message:
-
         return
 
-    group_id = message.chat.id
+    # --------------------------------------------------------
+    # Group / Topic
+    # --------------------------------------------------------
+
+    group_id = message.chat_id
+
     topic_id = message.message_thread_id
 
     if topic_id is None:
-
-        await query.message.reply_text(
-            "⚠️ این پنل باید داخل Topic حاضری باشد."
-        )
-
-        return
-
-    group = get_group(
-        group_id,
-        topic_id
-    )
-
-    if not group:
-
-        await query.message.reply_text(
-            "⚠️ این Topic ثبت نشده است.\n\n"
-            "ابتدا /register را اجرا کنید."
-        )
-
-        return
+        topic_id = 0
 
     # ========================================================
     # تنظیمات حاضری
@@ -433,139 +531,52 @@ async def admin_callback(
     if query.data == "attendance_settings":
 
         keyboard = [
-
             [
                 InlineKeyboardButton(
                     "🕐 ساعت ورود",
                     callback_data="set_entry_time"
                 )
             ],
-
             [
                 InlineKeyboardButton(
                     "🕐 ساعت خروج",
                     callback_data="set_exit_time"
                 )
             ],
-
             [
                 InlineKeyboardButton(
                     "💰 جریمه ورود دیر",
                     callback_data="set_late_fine"
                 )
             ],
-
             [
                 InlineKeyboardButton(
                     "💰 جریمه خروج زود",
                     callback_data="set_early_fine"
                 )
             ],
-
+    
             [
                 InlineKeyboardButton(
                     "📊 مشاهده تنظیمات",
                     callback_data="show_settings"
                 )
             ],
-
+        
             [
                 InlineKeyboardButton(
                     "🔙 بازگشت",
                     callback_data="back_admin"
                 )
             ]
-
         ]
 
         await query.message.edit_text(
             "⚙️ تنظیمات حاضری\n\n"
-            f"🏢 گروه: {group[1]}\n"
-            f"📌 Topic: {group[2]}\n\n"
+            f"🏢 گروه: {message.chat.title}\n"
+            f"📌 Topic ID: {topic_id}\n\n"
             "گزینه موردنظر را انتخاب کنید:",
             reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-        return
-
-    # ========================================================
-    # ساعت ورود
-    # ========================================================
-
-    if query.data == "set_entry_time":
-
-        context.user_data["admin_action"] = "entry_time"
-
-        await query.message.reply_text(
-            "🕐 ساعت ورود جدید را ارسال کنید.\n\n"
-            "مثال:\n"
-            "08:00"
-        )
-
-        return
-
-    # ========================================================
-    # ساعت خروج
-    # ========================================================
-
-    if query.data == "set_exit_time":
-
-        context.user_data["admin_action"] = "exit_time"
-
-        await query.message.reply_text(
-            "🕐 ساعت خروج جدید را ارسال کنید.\n\n"
-            "مثال:\n"
-            "17:00"
-        )
-
-        return
-
-    # ========================================================
-    # جریمه ورود
-    # ========================================================
-
-    if query.data == "set_late_fine":
-
-        context.user_data["admin_action"] = "late_fine"
-
-        await query.message.reply_text(
-            "💰 مبلغ جریمه ورود دیر را ارسال کنید.\n\n"
-            "مثال:\n"
-            "50"
-        )
-
-        return
-
-    # ========================================================
-    # جریمه خروج
-    # ========================================================
-
-    if query.data == "set_early_fine":
-
-        context.user_data["admin_action"] = "early_fine"
-
-        await query.message.reply_text(
-            "💰 مبلغ جریمه خروج زود را ارسال کنید.\n\n"
-            "مثال:\n"
-            "50"
-        )
-
-        return
-
-    # ========================================================
-    # نمایش تنظیمات
-    # ========================================================
-
-    if query.data == "show_settings":
-
-        await query.message.reply_text(
-            "⚙️ تنظیمات حاضری\n\n"
-            f"🏢 گروه: {group[1]}\n"
-            f"📌 Topic ID: {group[2]}\n\n"
-            f"🕐 ساعت ورود: {group[3]}\n"
-            f"🕐 ساعت خروج: {group[4]}\n\n"
-            f"💰 جریمه ورود دیر: {group[5]} افغانی\n"
-            f"💰 جریمه خروج زود: {group[6]} افغانی"
         )
 
         return
@@ -580,7 +591,7 @@ async def admin_callback(
 
         if not users:
 
-            text = "👥 هنوز هیچ کاربری ثبت نشده است."
+            text = "👥 هیچ کاربری ثبت نشده است."
 
         else:
 
@@ -607,12 +618,14 @@ async def admin_callback(
                     f"📌 {status_text}\n\n"
                 )
 
-        keyboard = [[
-            InlineKeyboardButton(
-                "🔙 بازگشت",
-                callback_data="back_admin"
-            )
-        ]]
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "🔙 بازگشت",
+                    callback_data="back_admin"
+                )
+            ]
+        ]
 
         await query.message.edit_text(
             text,
@@ -627,7 +640,7 @@ async def admin_callback(
 
     if query.data == "daily_report":
 
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = get_current_date()
 
         report = get_daily_report(
             group_id,
@@ -647,7 +660,9 @@ async def admin_callback(
 
             text = (
                 "📊 گزارش امروز\n\n"
-                f"📅 {today}\n\n"
+                f"📅 {today}\n"
+                f"🏢 {message.chat.title}\n"
+                f"📌 Topic: {topic_id}\n\n"
             )
 
             total_fine = 0
@@ -658,34 +673,38 @@ async def admin_callback(
             ):
 
                 name = row[0]
-                entry = row[1] or "—"
-                exit_time = row[2] or "—"
+
+                entry = row[1] or "ثبت نشده"
+                exit_time = row[2] or "ثبت نشده"
 
                 entry_fine = row[3] or 0
                 exit_fine = row[4] or 0
 
-                total = entry_fine + exit_fine
+                fine = entry_fine + exit_fine
 
-                total_fine += total
+                total_fine += fine
 
                 text += (
-                    f"{number}. {name}\n"
+                    f"{number}️⃣ {name}\n"
                     f"🟢 ورود: {entry}\n"
                     f"🔵 خروج: {exit_time}\n"
-                    f"💰 جریمه: {total} افغانی\n\n"
+                    f"💰 جریمه: {fine} افغانی\n\n"
                 )
 
             text += (
                 "━━━━━━━━━━━━\n"
-                f"💰 مجموع جریمه: {total_fine} افغانی"
+                f"💰 مجموع جریمه: "
+                f"{total_fine} افغانی"
             )
 
-        keyboard = [[
-            InlineKeyboardButton(
-                "🔙 بازگشت",
-                callback_data="back_admin"
-            )
-        ]]
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "🔙 بازگشت",
+                    callback_data="back_admin"
+                )
+            ]
+        ]
 
         await query.message.edit_text(
             text,
@@ -700,13 +719,18 @@ async def admin_callback(
 
     if query.data == "monthly_report":
 
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("Asia/Herat"))
+
+        year = now.year
+        month = now.month
 
         users = get_all_users()
 
         text = (
-            "📅 گزارش ماهانه\n\n"
-            f"📆 {now.year}-{now.month:02d}\n\n"
+            "📅 گزارش ماهانه حضور و غیاب\n\n"
+            f"📆 {year}-{month:02d}\n"
+            f"🏢 {message.chat.title}\n"
+            f"📌 Topic: {topic_id}\n\n"
         )
 
         total_fine_all = 0
@@ -723,8 +747,8 @@ async def admin_callback(
                 user_id,
                 group_id,
                 topic_id,
-                now.year,
-                now.month
+                year,
+                month
             )
 
             days = report[0] or 0
@@ -739,7 +763,7 @@ async def admin_callback(
             total_fine_all += total
 
             text += (
-                f"{number}. {name}\n"
+                f"{number}️⃣ {name}\n"
                 f"📆 روزهای ثبت‌شده: {days}\n"
                 f"🟡 ورود دیر: {late}\n"
                 f"🔴 خروج زود: {early}\n"
@@ -754,12 +778,14 @@ async def admin_callback(
             f"{total_fine_all} افغانی"
         )
 
-        keyboard = [[
-            InlineKeyboardButton(
-                "🔙 بازگشت",
-                callback_data="back_admin"
-            )
-        ]]
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "🔙 بازگشت",
+                    callback_data="back_admin"
+                )
+            ]
+        ]
 
         await query.message.edit_text(
             text,
@@ -774,11 +800,15 @@ async def admin_callback(
 
     if query.data == "total_fines":
 
-        now = datetime.now()
+        now = datetime.now(ZoneInfo("Asia/Herat"))
 
         users = get_all_users()
 
-        text = "💰 مجموع جریمه‌ها\n\n"
+        text = (
+            "💰 مجموع جریمه‌ها\n\n"
+            f"🏢 {message.chat.title}\n"
+            f"📌 Topic: {topic_id}\n\n"
+        )
 
         grand_total = 0
 
@@ -809,19 +839,140 @@ async def admin_callback(
 
         text += (
             "━━━━━━━━━━━━\n"
-            f"💰 مجموع کل: {grand_total} افغانی"
+            f"💰 مجموع کل: "
+            f"{grand_total} افغانی"
         )
 
-        keyboard = [[
-            InlineKeyboardButton(
-                "🔙 بازگشت",
-                callback_data="back_admin"
-            )
-        ]]
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "🔙 بازگشت",
+                    callback_data="back_admin"
+                )
+            ]
+        ]
 
         await query.message.edit_text(
             text,
             reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        return
+
+    # ========================================================
+    # ساعت ورود
+    # ========================================================
+
+    if query.data == "set_entry_time":
+
+        context.user_data["admin_action"] = "entry_time"
+        context.user_data["admin_group_id"] = group_id
+        context.user_data["admin_topic_id"] = topic_id
+
+        await query.message.reply_text(
+            "🕐 ساعت ورود جدید را ارسال کنید.\n\n"
+            "مثال:\n"
+            "08:00"
+        )
+
+        return
+
+    # ========================================================
+    # ساعت خروج
+    # ========================================================
+
+    if query.data == "set_exit_time":
+
+        context.user_data["admin_action"] = "exit_time"
+        context.user_data["admin_group_id"] = group_id
+        context.user_data["admin_topic_id"] = topic_id
+
+        await query.message.reply_text(
+            "🕐 ساعت خروج جدید را ارسال کنید.\n\n"
+            "مثال:\n"
+            "17:00"
+        )
+
+        return
+
+    # ========================================================
+    # جریمه ورود
+    # ========================================================
+
+    if query.data == "set_late_fine":
+
+        context.user_data["admin_action"] = "late_fine"
+        context.user_data["admin_group_id"] = group_id
+        context.user_data["admin_topic_id"] = topic_id
+
+        await query.message.reply_text(
+            "💰 مبلغ جریمه ورود دیر را ارسال کنید.\n\n"
+            "مثال:\n"
+            "50"
+        )
+
+        return
+
+    # ========================================================
+    # جریمه خروج
+    # ========================================================
+
+    if query.data == "set_early_fine":
+
+        context.user_data["admin_action"] = "early_fine"
+        context.user_data["admin_group_id"] = group_id
+        context.user_data["admin_topic_id"] = topic_id
+
+        await query.message.reply_text(
+            "💰 مبلغ جریمه خروج زود را ارسال کنید.\n\n"
+            "مثال:\n"
+            "50"
+        )
+
+        return
+
+    # ========================================================
+    # مشاهده تنظیمات
+    # ========================================================
+
+    if query.data == "show_settings":
+
+        group = get_group(
+            group_id,
+            topic_id
+        )
+
+        if not group:
+
+            await query.message.reply_text(
+                "⚠️ تنظیمات این Topic هنوز ثبت نشده است."
+            )
+
+            return
+
+        (
+            db_group_id,
+            group_name,
+            db_topic_id,
+            entry_time,
+            exit_time,
+            late_fine,
+            early_fine,
+            status
+        ) = group
+
+        await query.message.reply_text(
+            f"⚙️ تنظیمات حاضری\n\n"
+            f"🏢 گروه: {group_name}\n"
+            f"🆔 Group ID: {group_id}\n"
+            f"📌 Topic ID: {topic_id}\n\n"
+            f"🕐 ساعت ورود: {entry_time}\n"
+            f"🕐 ساعت خروج: {exit_time}\n\n"
+            f"💰 جریمه ورود دیر: "
+            f"{late_fine} افغانی\n"
+            f"💰 جریمه خروج زود: "
+            f"{early_fine} افغانی\n\n"
+            f"📌 وضعیت: {status}"
         )
 
         return
@@ -833,48 +984,42 @@ async def admin_callback(
     if query.data == "back_admin":
 
         keyboard = [
-
             [
                 InlineKeyboardButton(
                     "⚙️ تنظیمات حاضری",
                     callback_data="attendance_settings"
                 )
             ],
-
             [
                 InlineKeyboardButton(
-                    "👥 کاربران",
+                    "👥 مدیریت کاربران",
                     callback_data="manage_users"
                 )
             ],
-
             [
                 InlineKeyboardButton(
                     "📊 گزارش امروز",
                     callback_data="daily_report"
                 )
             ],
-
             [
                 InlineKeyboardButton(
                     "📅 گزارش ماهانه",
                     callback_data="monthly_report"
                 )
             ],
-
             [
                 InlineKeyboardButton(
                     "💰 مجموع جریمه‌ها",
                     callback_data="total_fines"
                 )
             ]
-
         ]
 
         await query.message.edit_text(
             "👨‍💼 پنل مدیریت\n\n"
-            f"🏢 گروه: {group[1]}\n"
-            f"📌 Topic: {group[2]}\n\n"
+            f"🏢 گروه: {message.chat.title}\n"
+            f"📌 Topic ID: {topic_id}\n\n"
             "یکی از گزینه‌های زیر را انتخاب کنید:",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
@@ -894,35 +1039,35 @@ async def admin_setting_input(
     user = update.effective_user
     message = update.effective_message
 
+    if not user or not message:
+        return
+
+    # فقط مدیر
     if user.id != ADMIN_ID:
         return
 
-    action = context.user_data.get("admin_action")
+    action = context.user_data.get(
+        "admin_action"
+    )
 
     if not action:
         return
 
-    if not message:
-        return
+    value = message.text.strip()
 
-    if not is_group_message(message):
-        return
-
-    topic_id = message.message_thread_id
-
-    if topic_id is None:
-        return
-
-    group = get_group(
-        message.chat.id,
-        topic_id
+    group_id = context.user_data.get(
+        "admin_group_id"
     )
 
-    if not group:
+    topic_id = context.user_data.get(
+        "admin_topic_id"
+    )
+
+    if not group_id or topic_id is None:
 
         await message.reply_text(
-            "⚠️ این Topic ثبت نشده است.\n\n"
-            "ابتدا /register را اجرا کنید."
+            "❌ اطلاعات گروه پیدا نشد.\n"
+            "لطفاً دوباره /admin را داخل Topic اجرا کنید."
         )
 
         context.user_data.pop(
@@ -931,10 +1076,6 @@ async def admin_setting_input(
         )
 
         return
-
-    value = normalize_text(
-        message.text
-    )
 
     # ========================================================
     # ساعت ورود
@@ -953,20 +1094,20 @@ async def admin_setting_input(
 
             await message.reply_text(
                 "❌ فرمت ساعت اشتباه است.\n\n"
-                "مثال صحیح:\n"
+                "فرمت صحیح:\n"
                 "08:00"
             )
 
             return
 
         update_group_settings(
-            group_id=message.chat.id,
+            group_id=group_id,
             topic_id=topic_id,
             entry_time=value
         )
 
         await message.reply_text(
-            "✅ ساعت ورود تغییر کرد.\n\n"
+            f"✅ ساعت ورود تغییر کرد.\n\n"
             f"🕐 ساعت جدید: {value}"
         )
 
@@ -987,20 +1128,20 @@ async def admin_setting_input(
 
             await message.reply_text(
                 "❌ فرمت ساعت اشتباه است.\n\n"
-                "مثال صحیح:\n"
+                "فرمت صحیح:\n"
                 "17:00"
             )
 
             return
 
         update_group_settings(
-            group_id=message.chat.id,
+            group_id=group_id,
             topic_id=topic_id,
             exit_time=value
         )
 
         await message.reply_text(
-            "✅ ساعت خروج تغییر کرد.\n\n"
+            f"✅ ساعت خروج تغییر کرد.\n\n"
             f"🕐 ساعت جدید: {value}"
         )
 
@@ -1012,31 +1153,30 @@ async def admin_setting_input(
 
         try:
 
-            amount = int(value)
+            number = int(value)
 
-            if amount < 0:
+            if number < 0:
                 raise ValueError
 
         except ValueError:
 
             await message.reply_text(
                 "❌ مبلغ نامعتبر است.\n\n"
-                "فقط عدد وارد کنید.\n\n"
-                "مثال:\n"
-                "50"
+                "فقط عدد وارد کنید.\n"
+                "مثال: 50"
             )
 
             return
 
         update_group_settings(
-            group_id=message.chat.id,
+            group_id=group_id,
             topic_id=topic_id,
-            late_entry_fine=amount
+            late_entry_fine=number
         )
 
         await message.reply_text(
-            "✅ جریمه ورود دیر تغییر کرد.\n\n"
-            f"💰 مبلغ جدید: {amount} افغانی"
+            f"✅ جریمه ورود دیر تغییر کرد.\n\n"
+            f"💰 مبلغ جدید: {number} افغانی"
         )
 
     # ========================================================
@@ -1047,278 +1187,51 @@ async def admin_setting_input(
 
         try:
 
-            amount = int(value)
+            number = int(value)
 
-            if amount < 0:
+            if number < 0:
                 raise ValueError
 
         except ValueError:
 
             await message.reply_text(
                 "❌ مبلغ نامعتبر است.\n\n"
-                "فقط عدد وارد کنید.\n\n"
-                "مثال:\n"
-                "50"
+                "فقط عدد وارد کنید.\n"
+                "مثال: 50"
             )
 
             return
 
         update_group_settings(
-            group_id=message.chat.id,
+            group_id=group_id,
             topic_id=topic_id,
-            early_exit_fine=amount
+            early_exit_fine=number
         )
 
         await message.reply_text(
-            "✅ جریمه خروج زود تغییر کرد.\n\n"
-            f"💰 مبلغ جدید: {amount} افغانی"
+            f"✅ جریمه خروج زود تغییر کرد.\n\n"
+            f"💰 مبلغ جدید: {number} افغانی"
         )
 
+    # پاک کردن حالت
     context.user_data.pop(
         "admin_action",
         None
     )
 
-
-# ============================================================
-# حضور و غیاب
-# ============================================================
-
-async def attendance_handler(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE
-):
-
-    message = update.effective_message
-
-    if not message:
-        return
-
-    if not is_group_message(message):
-        return
-
-    topic_id = message.message_thread_id
-
-    if topic_id is None:
-        return
-
-    # --------------------------------------------------------
-    # دریافت متن یا Caption
-    # --------------------------------------------------------
-
-    text = message.text or message.caption
-
-    if not text:
-        return
-
-    text = normalize_text(text)
-
-    # فقط سلام یا خداحافظ
-    if not is_hello(text) and not is_goodbye(text):
-        return
-
-    # --------------------------------------------------------
-    # ثبت کاربر
-    # --------------------------------------------------------
-
-    user = message.from_user
-
-    if not user:
-        return
-
-    add_user(
-        user_id=user.id,
-        name=user.full_name
+    context.user_data.pop(
+        "admin_group_id",
+        None
     )
 
-    # --------------------------------------------------------
-    # دریافت گروه
-    # --------------------------------------------------------
-
-    group = get_group(
-        message.chat.id,
-        topic_id
+    context.user_data.pop(
+        "admin_topic_id",
+        None
     )
-
-    # اگر گروه ثبت نشده
-    if not group:
-
-        await message.reply_text(
-            "⚠️ این Topic هنوز برای حضور و غیاب ثبت نشده است.\n\n"
-            "مدیر گروه باید داخل همین Topic دستور زیر را ارسال کند:\n\n"
-            "/register"
-        )
-
-        return
-
-    (
-        group_id,
-        group_name,
-        saved_topic_id,
-        entry_time,
-        exit_time,
-        late_entry_fine,
-        early_exit_fine,
-        status
-    ) = group
-
-    # گروه غیرفعال
-    if status != "active":
-        return
-
-    # --------------------------------------------------------
-    # زمان فعلی
-    # --------------------------------------------------------
-
-    now = datetime.now()
-
-    today = now.strftime(
-        "%Y-%m-%d"
-    )
-
-    current_time = now.strftime(
-        "%H:%M"
-    )
-
-    # ========================================================
-    # ورود
-    # ========================================================
-
-    if is_hello(text):
-
-        attendance = get_today_attendance(
-            user.id,
-            group_id,
-            saved_topic_id,
-            today
-        )
-
-        # ورود قبلاً ثبت شده
-        if attendance:
-
-            await message.reply_text(
-                "⚠️ ورود شما قبلاً ثبت شده است.\n\n"
-                f"👤 {user.full_name}\n"
-                f"🕐 زمان ورود: {attendance[5]}"
-            )
-
-            return
-
-        # محاسبه جریمه
-        entry_fine = 0
-
-        if current_time > entry_time:
-
-            entry_fine = late_entry_fine
-
-        # ثبت
-        create_today_attendance(
-            user_id=user.id,
-            group_id=group_id,
-            topic_id=saved_topic_id,
-            date=today,
-            entry_time=current_time,
-            entry_fine=entry_fine
-        )
-
-        # پیام جریمه
-        if entry_fine > 0:
-
-            await message.reply_text(
-                "⚠️ ورود ثبت شد\n\n"
-                f"👤 {user.full_name}\n"
-                f"🕐 زمان ورود: {current_time}\n"
-                f"⏰ ساعت تعیین‌شده: {entry_time}\n\n"
-                f"💰 جریمه تأخیر: "
-                f"{entry_fine} افغانی"
-            )
-
-        else:
-
-            await message.reply_text(
-                "🟢 ورود ثبت شد\n\n"
-                f"👤 {user.full_name}\n"
-                f"🕐 زمان ورود: {current_time}\n"
-                f"⏰ ساعت تعیین‌شده: {entry_time}\n\n"
-                "💰 جریمه: 0 افغانی"
-            )
-
-        return
-
-    # ========================================================
-    # خروج
-    # ========================================================
-
-    if is_goodbye(text):
-
-        attendance = get_today_attendance(
-            user.id,
-            group_id,
-            saved_topic_id,
-            today
-        )
-
-        # ورود ثبت نشده
-        if not attendance:
-
-            await message.reply_text(
-                "⚠️ برای امروز ورود شما ثبت نشده است.\n\n"
-                "ابتدا باید ورود خود را با پیام «سلام» ثبت کنید."
-            )
-
-            return
-
-        # خروج قبلاً ثبت شده
-        if attendance[6]:
-
-            await message.reply_text(
-                "⚠️ خروج شما قبلاً ثبت شده است.\n\n"
-                f"🕐 زمان خروج: {attendance[6]}"
-            )
-
-            return
-
-        # محاسبه جریمه خروج
-        exit_fine = 0
-
-        if current_time < exit_time:
-
-            exit_fine = early_exit_fine
-
-        # ثبت خروج
-        update_exit(
-            attendance_id=attendance[0],
-            exit_time=current_time,
-            exit_fine=exit_fine
-        )
-
-        # پیام
-        if exit_fine > 0:
-
-            await message.reply_text(
-                "⚠️ خروج ثبت شد\n\n"
-                f"👤 {user.full_name}\n"
-                f"🕐 زمان خروج: {current_time}\n"
-                f"⏰ ساعت تعیین‌شده: {exit_time}\n\n"
-                f"💰 جریمه خروج زودهنگام: "
-                f"{exit_fine} افغانی"
-            )
-
-        else:
-
-            await message.reply_text(
-                "🔵 خروج ثبت شد\n\n"
-                f"👤 {user.full_name}\n"
-                f"🕐 زمان خروج: {current_time}\n"
-                f"⏰ ساعت تعیین‌شده: {exit_time}\n\n"
-                "💰 جریمه: 0 افغانی"
-            )
-
-        return
 
 
 # ============================================================
-# کاربران
+# نمایش کاربران
 # ============================================================
 
 async def show_users(
@@ -1375,7 +1288,7 @@ async def show_users(
 
 
 # ============================================================
-# گزارش روزانه
+# گزارش روزانه با دستور
 # ============================================================
 
 async def daily_report(
@@ -1394,44 +1307,26 @@ async def daily_report(
 
         return
 
-    if not is_group_message(message):
+    if message.chat.type not in [
+        "group",
+        "supergroup"
+    ]:
 
         await message.reply_text(
-            "⚠️ این دستور باید داخل Topic حاضری باشد."
+            "⚠️ این دستور را داخل گروه اجرا کنید."
         )
 
         return
 
-    topic_id = message.message_thread_id
+    group_id = message.chat_id
+    topic_id = message.message_thread_id or 0
 
-    if topic_id is None:
+    ensure_group_exists(message)
 
-        await message.reply_text(
-            "⚠️ این دستور باید داخل Topic حاضری باشد."
-        )
-
-        return
-
-    group = get_group(
-        message.chat.id,
-        topic_id
-    )
-
-    if not group:
-
-        await message.reply_text(
-            "⚠️ این Topic ثبت نشده است.\n\n"
-            "ابتدا /register را اجرا کنید."
-        )
-
-        return
-
-    today = datetime.now().strftime(
-        "%Y-%m-%d"
-    )
+    today = get_current_date()
 
     report = get_daily_report(
-        message.chat.id,
+        group_id,
         topic_id,
         today
     )
@@ -1439,7 +1334,7 @@ async def daily_report(
     if not report:
 
         await message.reply_text(
-            "📊 گزارش امروز\n\n"
+            f"📊 گزارش حضور امروز\n\n"
             f"📅 تاریخ: {today}\n\n"
             "هنوز هیچ حضور و غیابی ثبت نشده است."
         )
@@ -1448,12 +1343,13 @@ async def daily_report(
 
     text = (
         "📊 گزارش حضور امروز\n\n"
-        f"🏢 گروه: {group[1]}\n"
-        f"📌 Topic: {topic_id}\n"
-        f"📅 تاریخ: {today}\n\n"
+        f"📅 تاریخ: {today}\n"
+        f"🏢 گروه: {message.chat.title}\n"
+        f"📌 Topic: {topic_id}\n\n"
     )
 
     total_fine = 0
+    total_people = 0
 
     for number, row in enumerate(
         report,
@@ -1461,35 +1357,35 @@ async def daily_report(
     ):
 
         name = row[0]
-        entry = row[1] or "ثبت نشده"
-        exit_time = row[2] or "ثبت نشده"
+        entry = row[1]
+        exit_time = row[2]
 
         entry_fine = row[3] or 0
         exit_fine = row[4] or 0
 
-        total = entry_fine + exit_fine
+        fine = entry_fine + exit_fine
 
-        total_fine += total
+        total_fine += fine
+        total_people += 1
 
         text += (
             f"{number}️⃣ {name}\n"
-            f"🟢 ورود: {entry}\n"
-            f"🔵 خروج: {exit_time}\n"
-            f"💰 جریمه: {total} افغانی\n\n"
+            f"🟢 ورود: {entry or 'ثبت نشده'}\n"
+            f"🔵 خروج: {exit_time or 'ثبت نشده'}\n"
+            f"💰 جریمه: {fine} افغانی\n\n"
         )
 
     text += (
         "━━━━━━━━━━━━\n"
+        f"👥 تعداد ثبت‌شده: {total_people}\n"
         f"💰 مجموع جریمه: {total_fine} افغانی"
     )
 
-    await message.reply_text(
-        text
-    )
+    await message.reply_text(text)
 
 
 # ============================================================
-# گزارش ماهانه
+# گزارش ماهانه با دستور
 # ============================================================
 
 async def monthly_report(
@@ -1508,38 +1404,23 @@ async def monthly_report(
 
         return
 
-    if not is_group_message(message):
+    if message.chat.type not in [
+        "group",
+        "supergroup"
+    ]:
 
         await message.reply_text(
-            "⚠️ این دستور باید داخل Topic حاضری باشد."
+            "⚠️ این دستور را داخل گروه اجرا کنید."
         )
 
         return
 
-    topic_id = message.message_thread_id
+    group_id = message.chat_id
+    topic_id = message.message_thread_id or 0
 
-    if topic_id is None:
+    ensure_group_exists(message)
 
-        await message.reply_text(
-            "⚠️ این دستور باید داخل Topic حاضری باشد."
-        )
-
-        return
-
-    group = get_group(
-        message.chat.id,
-        topic_id
-    )
-
-    if not group:
-
-        await message.reply_text(
-            "⚠️ این Topic ثبت نشده است."
-        )
-
-        return
-
-    now = datetime.now()
+    now = datetime.now(ZoneInfo("Asia/Herat"))
 
     users = get_all_users()
 
@@ -1553,9 +1434,9 @@ async def monthly_report(
 
     text = (
         "📅 گزارش ماهانه حضور و غیاب\n\n"
-        f"🏢 گروه: {group[1]}\n"
-        f"📌 Topic: {topic_id}\n"
-        f"📆 ماه: {now.year}-{now.month:02d}\n\n"
+        f"📆 ماه: {now.year}-{now.month:02d}\n"
+        f"🏢 گروه: {message.chat.title}\n"
+        f"📌 Topic: {topic_id}\n\n"
     )
 
     total_fine_all = 0
@@ -1570,7 +1451,7 @@ async def monthly_report(
 
         report = get_monthly_user_report(
             user_id,
-            message.chat.id,
+            group_id,
             topic_id,
             now.year,
             now.month
@@ -1603,8 +1484,21 @@ async def monthly_report(
         f"{total_fine_all} افغانی"
     )
 
-    await message.reply_text(
-        text
+    await message.reply_text(text)
+
+
+# ============================================================
+# خطایابی
+# ============================================================
+
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    print(
+        "ERROR:",
+        context.error
     )
 
 
@@ -1612,154 +1506,106 @@ async def monthly_report(
 # اجرای ربات
 # ============================================================
 
-async def main():
+def main():
 
-    # ساخت دیتابیس
     create_tables()
 
-    # ساخت Application
-    app = (
-        Application
-        .builder()
-        .token(BOT_TOKEN)
-        .build()
-    )
+    app = Application.builder().token(BOT_TOKEN).build()
 
-    # --------------------------------------------------------
+    # ==========================================
     # دستورات
-    # --------------------------------------------------------
+    # ==========================================
 
     app.add_handler(
-        CommandHandler(
-            "start",
-            start
-        )
+        CommandHandler("start", start)
     )
 
     app.add_handler(
-        CommandHandler(
-            "register",
-            register_group
-        )
+        CommandHandler("admin", admin_panel)
     )
 
     app.add_handler(
-        CommandHandler(
-            "admin",
-            admin_panel
-        )
+        CommandHandler("users", show_users)
     )
 
     app.add_handler(
-        CommandHandler(
-            "users",
-            show_users
-        )
+        CommandHandler("groupinfo", group_info)
     )
 
     app.add_handler(
-        CommandHandler(
-            "groupinfo",
-            group_info
-        )
+        CommandHandler("topicinfo", topic_info)
     )
 
     app.add_handler(
-        CommandHandler(
-            "topicinfo",
-            topic_info
-        )
+        CommandHandler("report", daily_report)
     )
 
     app.add_handler(
-        CommandHandler(
-            "report",
-            daily_report
-        )
+        CommandHandler("monthly", monthly_report)
     )
+
+    # ==========================================
+    # دکمه‌های پنل مدیریت
+    # ==========================================
 
     app.add_handler(
-        CommandHandler(
-            "monthly",
-            monthly_report
-        )
+        CallbackQueryHandler(admin_callback)
     )
 
-    # --------------------------------------------------------
-    # دکمه‌های پنل
-    # --------------------------------------------------------
-
-    app.add_handler(
-        CallbackQueryHandler(
-            admin_callback
-        )
-    )
-
-    # --------------------------------------------------------
-    # تنظیمات مدیر
-    # --------------------------------------------------------
+# ==========================================
+# حضور و غیاب
+# متن + عکس دارای کپشن
+# ==========================================
 
     app.add_handler(
         MessageHandler(
+        (
             filters.TEXT
-            & ~filters.COMMAND,
-            admin_setting_input
-        ),
-        group=0
-    )
-
-    # --------------------------------------------------------
-    # حضور و غیاب
-    #
-    # filters.ALL باعث می‌شود:
-    # عکس + Caption
-    # متن
-    # و سایر پیام‌ها بررسی شوند.
-    # --------------------------------------------------------
-
-    app.add_handler(
-        MessageHandler(
-            filters.ALL
-            & ~filters.COMMAND,
-            attendance_handler
+            | filters.PHOTO
+        ) & ~filters.COMMAND,
+        attendance_handler
         ),
         group=1
     )
 
-    print(
-        "===================================="
+# ==========================================
+# پیام‌های متنی مدیر
+# ==========================================
+
+    app.add_handler(
+    MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        admin_setting_input
+    ),
+        group=2
     )
 
-    print(
-        "Attendance Bot Started..."
-    )
-
-    print(
-        "Multi Group / Multi Topic Mode"
-    )
-
-    print(
-        "===================================="
-    )
-
-    # --------------------------------------------------------
+    # ==========================================
     # اجرای ربات
-    # --------------------------------------------------------
+    # ==========================================
+
+    print("Attendance Bot Started...")
+
+    import asyncio
+
+    asyncio.run(run_bot(app))
+
+
+async def run_bot(app):
 
     await app.initialize()
 
     await app.start()
 
-    await app.updater.start_polling()
+    await app.updater.start_polling(
+        drop_pending_updates=False
+    )
 
     try:
 
         await asyncio.Event().wait()
 
-    except (
-        KeyboardInterrupt,
-        SystemExit
-    ):
+    except (KeyboardInterrupt, SystemExit):
 
         pass
 
@@ -1772,12 +1618,5 @@ async def main():
         await app.shutdown()
 
 
-# ============================================================
-# شروع
-# ============================================================
-
 if __name__ == "__main__":
-
-    asyncio.run(
-        main()
-    )
+    main()
