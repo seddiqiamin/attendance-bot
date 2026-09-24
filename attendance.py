@@ -35,13 +35,57 @@ from database import (
 
 
 # ============================================================
-# ابزارهای کمکی
+# زمان افغانستان
+# ============================================================
+
+AFGHANISTAN_TZ = ZoneInfo("Asia/Kabul")
+
+
+def get_current_datetime():
+    """
+    زمان فعلی افغانستان
+    مستقل از timezone سرور Railway
+    """
+    return datetime.now(AFGHANISTAN_TZ)
+
+
+def get_current_date():
+    """
+    تاریخ امروز افغانستان
+    """
+    return get_current_datetime().strftime("%Y-%m-%d")
+
+
+def get_current_time():
+    """
+    ساعت فعلی افغانستان
+    """
+    return get_current_datetime().strftime("%H:%M")
+
+
+def time_to_minutes(time_string):
+    """
+    تبدیل HH:MM به دقیقه
+    برای مقایسه دقیق ساعت
+    """
+
+    try:
+        hour, minute = map(
+            int,
+            time_string.split(":")
+        )
+
+        return hour * 60 + minute
+
+    except (ValueError, AttributeError):
+        return 0
+
+
+# ============================================================
+# دریافت Group ID و Topic ID
 # ============================================================
 
 def get_chat_topic(update):
-    """
-    دریافت Group ID و Topic ID از پیام فعلی
-    """
 
     message = update.effective_message
 
@@ -50,33 +94,22 @@ def get_chat_topic(update):
 
     group_id = message.chat_id
 
-    # اگر پیام داخل Topic باشد
     topic_id = message.message_thread_id
 
-    # برای جلوگیری از NULL در دیتابیس
     if topic_id is None:
         topic_id = 0
 
     return group_id, topic_id
 
 
-AFGHANISTAN_TZ = ZoneInfo("Asia/Kabul")
-
-def get_current_datetime():
-    return datetime.now(AFGHANISTAN_TZ)
-
-def get_current_date():
-    return get_current_datetime().strftime("%Y-%m-%d")
-
-def get_current_time():
-    return get_current_datetime().strftime("%H:%M")
-
-
 # ============================================================
 # /start
 # ============================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     user = update.effective_user
 
@@ -97,10 +130,46 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================
+# تست زمان
+# ============================================================
+
+async def time_test(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    message = update.effective_message
+
+    if not message:
+        return
+
+    now = get_current_datetime()
+
+    utc_now = now.astimezone(
+        ZoneInfo("UTC")
+    )
+
+    await message.reply_text(
+        f"🕐 زمان ربات\n\n"
+        f"📅 تاریخ افغانستان: "
+        f"{now.strftime('%Y-%m-%d')}\n"
+        f"⏰ ساعت افغانستان: "
+        f"{now.strftime('%H:%M:%S')}\n"
+        f"🌍 منطقه زمانی: "
+        f"{now.tzname()}\n\n"
+        f"🕓 زمان UTC:\n"
+        f"{utc_now.strftime('%Y-%m-%d %H:%M:%S')}"
+    )
+
+
+# ============================================================
 # اطلاعات گروه
 # ============================================================
 
-async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def group_info(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     message = update.effective_message
 
@@ -119,7 +188,10 @@ async def group_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # اطلاعات Topic
 # ============================================================
 
-async def topic_info(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def topic_info(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
     message = update.effective_message
 
@@ -186,14 +258,14 @@ async def attendance_handler(
     if not message:
         return
 
-    # فقط گروه
+    # فقط گروه و سوپرگروه
     if message.chat.type not in [
         "group",
         "supergroup"
     ]:
         return
 
-    # متن پیام
+    # متن پیام یا کپشن عکس
     text = message.text or message.caption
 
     if not text:
@@ -216,7 +288,7 @@ async def attendance_handler(
     )
 
     # --------------------------------------------------------
-    # دریافت Group ID و Topic ID
+    # Group / Topic
     # --------------------------------------------------------
 
     group_id = message.chat_id
@@ -233,9 +305,11 @@ async def attendance_handler(
     group = ensure_group_exists(message)
 
     if not group:
+
         await message.reply_text(
             "❌ خطا در ثبت گروه."
         )
+
         return
 
     (
@@ -254,10 +328,11 @@ async def attendance_handler(
         return
 
     # --------------------------------------------------------
-    # تاریخ و ساعت
+    # زمان افغانستان
     # --------------------------------------------------------
 
     today = get_current_date()
+
     current_time = get_current_time()
 
     # ========================================================
@@ -288,13 +363,24 @@ async def attendance_handler(
 
             return
 
-        # محاسبه جریمه
+        # ----------------------------------------------------
+        # محاسبه جریمه ورود
+        # ----------------------------------------------------
+
         entry_fine = 0
 
-        if current_time > entry_time:
+        if (
+            time_to_minutes(current_time)
+            >
+            time_to_minutes(entry_time)
+        ):
+
             entry_fine = late_entry_fine
 
-        # ذخیره
+        # ----------------------------------------------------
+        # ذخیره ورود
+        # ----------------------------------------------------
+
         create_today_attendance(
             user_id=user.id,
             group_id=group_id,
@@ -304,7 +390,10 @@ async def attendance_handler(
             entry_fine=entry_fine
         )
 
-        # پیام
+        # ----------------------------------------------------
+        # پیام ورود
+        # ----------------------------------------------------
+
         if entry_fine > 0:
 
             await message.reply_text(
@@ -366,20 +455,34 @@ async def attendance_handler(
 
             return
 
+        # ----------------------------------------------------
         # محاسبه جریمه خروج
+        # ----------------------------------------------------
+
         exit_fine = 0
 
-        if current_time < exit_time:
+        if (
+            time_to_minutes(current_time)
+            <
+            time_to_minutes(exit_time)
+        ):
+
             exit_fine = early_exit_fine
 
+        # ----------------------------------------------------
         # ذخیره خروج
+        # ----------------------------------------------------
+
         update_exit(
             attendance_id=attendance[0],
             exit_time=current_time,
             exit_fine=exit_fine
         )
 
-        # پیام
+        # ----------------------------------------------------
+        # پیام خروج
+        # ----------------------------------------------------
+
         if exit_fine > 0:
 
             await message.reply_text(
@@ -414,6 +517,7 @@ async def admin_panel(
 ):
 
     user = update.effective_user
+
     message = update.effective_message
 
     if not user or not message:
@@ -427,7 +531,7 @@ async def admin_panel(
 
         return
 
-    # پنل باید داخل گروه/Topic باز شود
+    # فقط گروه
     if message.chat.type not in [
         "group",
         "supergroup"
@@ -435,13 +539,16 @@ async def admin_panel(
 
         await message.reply_text(
             "⚠️ برای مدیریت تنظیمات، "
-            "دستور /admin را داخل Topic حضور و غیاب گروه اجرا کنید."
+            "دستور /admin را داخل Topic "
+            "حضور و غیاب گروه اجرا کنید."
         )
 
         return
 
-    # اطمینان از ثبت گروه
+    # ثبت گروه
     ensure_group_exists(message)
+
+    topic_id = message.message_thread_id or 0
 
     keyboard = [
         [
@@ -479,7 +586,7 @@ async def admin_panel(
     await message.reply_text(
         "👨‍💼 پنل مدیریت\n\n"
         f"🏢 گروه: {message.chat.title}\n"
-        f"📌 Topic ID: {message.message_thread_id or 0}\n\n"
+        f"📌 Topic ID: {topic_id}\n\n"
         "یکی از گزینه‌های زیر را انتخاب کنید:",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
@@ -559,14 +666,12 @@ async def admin_callback(
                     callback_data="set_early_fine"
                 )
             ],
-    
             [
                 InlineKeyboardButton(
                     "📊 مشاهده تنظیمات",
                     callback_data="show_settings"
                 )
             ],
-        
             [
                 InlineKeyboardButton(
                     "🔙 بازگشت",
@@ -607,7 +712,9 @@ async def admin_callback(
             ):
 
                 user_id = user_data[0]
+
                 name = user_data[1]
+
                 status = user_data[2]
 
                 status_text = (
@@ -679,9 +786,11 @@ async def admin_callback(
                 name = row[0]
 
                 entry = row[1] or "ثبت نشده"
+
                 exit_time = row[2] or "ثبت نشده"
 
                 entry_fine = row[3] or 0
+
                 exit_fine = row[4] or 0
 
                 fine = entry_fine + exit_fine
@@ -726,6 +835,7 @@ async def admin_callback(
         now = get_current_datetime()
 
         year = now.year
+
         month = now.month
 
         users = get_all_users()
@@ -745,6 +855,7 @@ async def admin_callback(
         ):
 
             user_id = user_data[0]
+
             name = user_data[1]
 
             report = get_monthly_user_report(
@@ -756,10 +867,13 @@ async def admin_callback(
             )
 
             days = report[0] or 0
+
             late = report[1] or 0
+
             early = report[2] or 0
 
             entry_fine = report[3] or 0
+
             exit_fine = report[4] or 0
 
             total = entry_fine + exit_fine
@@ -819,6 +933,7 @@ async def admin_callback(
         for user_data in users:
 
             user_id = user_data[0]
+
             name = user_data[1]
 
             report = get_monthly_user_report(
@@ -830,6 +945,7 @@ async def admin_callback(
             )
 
             entry_fine = report[3] or 0
+
             exit_fine = report[4] or 0
 
             total = entry_fine + exit_fine
@@ -870,7 +986,9 @@ async def admin_callback(
     if query.data == "set_entry_time":
 
         context.user_data["admin_action"] = "entry_time"
+
         context.user_data["admin_group_id"] = group_id
+
         context.user_data["admin_topic_id"] = topic_id
 
         await query.message.reply_text(
@@ -888,7 +1006,9 @@ async def admin_callback(
     if query.data == "set_exit_time":
 
         context.user_data["admin_action"] = "exit_time"
+
         context.user_data["admin_group_id"] = group_id
+
         context.user_data["admin_topic_id"] = topic_id
 
         await query.message.reply_text(
@@ -906,7 +1026,9 @@ async def admin_callback(
     if query.data == "set_late_fine":
 
         context.user_data["admin_action"] = "late_fine"
+
         context.user_data["admin_group_id"] = group_id
+
         context.user_data["admin_topic_id"] = topic_id
 
         await query.message.reply_text(
@@ -924,7 +1046,9 @@ async def admin_callback(
     if query.data == "set_early_fine":
 
         context.user_data["admin_action"] = "early_fine"
+
         context.user_data["admin_group_id"] = group_id
+
         context.user_data["admin_topic_id"] = topic_id
 
         await query.message.reply_text(
@@ -1041,6 +1165,7 @@ async def admin_setting_input(
 ):
 
     user = update.effective_user
+
     message = update.effective_message
 
     if not user or not message:
@@ -1055,6 +1180,9 @@ async def admin_setting_input(
     )
 
     if not action:
+        return
+
+    if not message.text:
         return
 
     value = message.text.strip()
@@ -1245,6 +1373,9 @@ async def show_users(
 
     user = update.effective_user
 
+    if not user:
+        return
+
     if user.id != ADMIN_ID:
 
         await update.effective_message.reply_text(
@@ -1271,7 +1402,9 @@ async def show_users(
     ):
 
         user_id = user_data[0]
+
         name = user_data[1]
+
         status = user_data[2]
 
         status_text = (
@@ -1292,7 +1425,7 @@ async def show_users(
 
 
 # ============================================================
-# گزارش روزانه با دستور
+# گزارش روزانه
 # ============================================================
 
 async def daily_report(
@@ -1301,7 +1434,11 @@ async def daily_report(
 ):
 
     user = update.effective_user
+
     message = update.effective_message
+
+    if not user or not message:
+        return
 
     if user.id != ADMIN_ID:
 
@@ -1323,6 +1460,7 @@ async def daily_report(
         return
 
     group_id = message.chat_id
+
     topic_id = message.message_thread_id or 0
 
     ensure_group_exists(message)
@@ -1353,6 +1491,7 @@ async def daily_report(
     )
 
     total_fine = 0
+
     total_people = 0
 
     for number, row in enumerate(
@@ -1361,15 +1500,19 @@ async def daily_report(
     ):
 
         name = row[0]
+
         entry = row[1]
+
         exit_time = row[2]
 
         entry_fine = row[3] or 0
+
         exit_fine = row[4] or 0
 
         fine = entry_fine + exit_fine
 
         total_fine += fine
+
         total_people += 1
 
         text += (
@@ -1385,11 +1528,13 @@ async def daily_report(
         f"💰 مجموع جریمه: {total_fine} افغانی"
     )
 
-    await message.reply_text(text)
+    await message.reply_text(
+        text
+    )
 
 
 # ============================================================
-# گزارش ماهانه با دستور
+# گزارش ماهانه
 # ============================================================
 
 async def monthly_report(
@@ -1398,7 +1543,11 @@ async def monthly_report(
 ):
 
     user = update.effective_user
+
     message = update.effective_message
+
+    if not user or not message:
+        return
 
     if user.id != ADMIN_ID:
 
@@ -1420,6 +1569,7 @@ async def monthly_report(
         return
 
     group_id = message.chat_id
+
     topic_id = message.message_thread_id or 0
 
     ensure_group_exists(message)
@@ -1451,6 +1601,7 @@ async def monthly_report(
     ):
 
         user_id = user_data[0]
+
         name = user_data[1]
 
         report = get_monthly_user_report(
@@ -1462,10 +1613,13 @@ async def monthly_report(
         )
 
         days = report[0] or 0
+
         late = report[1] or 0
+
         early = report[2] or 0
 
         entry_fine = report[3] or 0
+
         exit_fine = report[4] or 0
 
         total = entry_fine + exit_fine
@@ -1488,7 +1642,9 @@ async def monthly_report(
         f"{total_fine_all} افغانی"
     )
 
-    await message.reply_text(text)
+    await message.reply_text(
+        text
+    )
 
 
 # ============================================================
@@ -1512,88 +1668,151 @@ async def error_handler(
 
 def main():
 
+    # ایجاد جداول دیتابیس
     create_tables()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    # ساخت Application
+    app = (
+        Application
+        .builder()
+        .token(BOT_TOKEN)
+        .build()
+    )
 
-    # ==========================================
+    # ========================================================
     # دستورات
-    # ==========================================
+    # ========================================================
 
     app.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     app.add_handler(
-        CommandHandler("admin", admin_panel)
+        CommandHandler(
+            "admin",
+            admin_panel
+        )
     )
 
     app.add_handler(
-        CommandHandler("users", show_users)
+        CommandHandler(
+            "users",
+            show_users
+        )
     )
 
     app.add_handler(
-        CommandHandler("groupinfo", group_info)
+        CommandHandler(
+            "groupinfo",
+            group_info
+        )
     )
 
     app.add_handler(
-        CommandHandler("topicinfo", topic_info)
+        CommandHandler(
+            "topicinfo",
+            topic_info
+        )
     )
 
     app.add_handler(
-        CommandHandler("report", daily_report)
+        CommandHandler(
+            "report",
+            daily_report
+        )
     )
 
     app.add_handler(
-        CommandHandler("monthly", monthly_report)
+        CommandHandler(
+            "monthly",
+            monthly_report
+        )
     )
 
-    # ==========================================
+    # تست زمان
+    app.add_handler(
+        CommandHandler(
+            "time",
+            time_test
+        )
+    )
+
+    # ========================================================
     # دکمه‌های پنل مدیریت
-    # ==========================================
+    # ========================================================
 
     app.add_handler(
-        CallbackQueryHandler(admin_callback)
+        CallbackQueryHandler(
+            admin_callback
+        )
     )
 
-# ==========================================
-# حضور و غیاب
-# متن + عکس دارای کپشن
-# ==========================================
+    # ========================================================
+    # حضور و غیاب
+    #
+    # متن + عکس دارای کپشن
+    # ========================================================
 
     app.add_handler(
         MessageHandler(
-        (
-            filters.TEXT
-            | filters.PHOTO
-        ) & ~filters.COMMAND,
-        attendance_handler
+            (
+                filters.TEXT
+                | filters.PHOTO
+            )
+            & ~filters.COMMAND,
+            attendance_handler
         ),
         group=1
     )
 
-# ==========================================
-# پیام‌های متنی مدیر
-# ==========================================
+    # ========================================================
+    # پیام‌های متنی مدیر
+    # ========================================================
 
     app.add_handler(
-    MessageHandler(
-        filters.TEXT & ~filters.COMMAND,
-        admin_setting_input
-    ),
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            admin_setting_input
+        ),
         group=2
     )
 
-    # ==========================================
+    # ========================================================
+    # خطایابی
+    # ========================================================
+
+    app.add_error_handler(
+        error_handler
+    )
+
+    # ========================================================
     # اجرای ربات
-    # ==========================================
+    # ========================================================
 
-    print("Attendance Bot Started...")
+    print(
+        "Attendance Bot Started..."
+    )
 
-    import asyncio
+    print(
+        "Timezone: Asia/Kabul"
+    )
 
-    asyncio.run(run_bot(app))
+    print(
+        f"Current Afghanistan Time: "
+        f"{get_current_datetime().strftime('%Y-%m-%d %H:%M:%S')}"
+    )
 
+    asyncio.run(
+        run_bot(app)
+    )
+
+
+# ============================================================
+# اجرای Polling
+# ============================================================
 
 async def run_bot(app):
 
@@ -1609,7 +1828,10 @@ async def run_bot(app):
 
         await asyncio.Event().wait()
 
-    except (KeyboardInterrupt, SystemExit):
+    except (
+        KeyboardInterrupt,
+        SystemExit
+    ):
 
         pass
 
@@ -1622,5 +1844,10 @@ async def run_bot(app):
         await app.shutdown()
 
 
+# ============================================================
+# اجرای مستقیم
+# ============================================================
+
 if __name__ == "__main__":
+
     main()
